@@ -1,8 +1,13 @@
 import type { RouteConfig } from '@asteasolutions/zod-to-openapi'
-import type { Context } from 'hono'
+import type { Context, TypedResponse } from 'hono'
+import { bearerAuth } from 'hono/bearer-auth'
 import { hc } from 'hono/client'
-import { describe, it, expect, expectTypeOf } from 'vitest'
+import { describe, expect, expectTypeOf, it } from 'vitest'
+import type { RouteConfigToTypedResponse } from '../src/index'
 import { OpenAPIHono, createRoute, z } from '../src/index'
+import type { Equal, Expect } from 'hono/utils/types'
+import type { ServerErrorStatusCode } from 'hono/utils/http-status'
+import { stringify } from 'yaml'
 
 describe('Constructor', () => {
   it('Should not require init object', () => {
@@ -104,11 +109,14 @@ describe('Basic - params', () => {
     route,
     (c) => {
       const { id } = c.req.valid('param')
-      return c.json({
-        id,
-        age: 20,
-        name: 'Ultra-man',
-      })
+      return c.json(
+        {
+          id,
+          age: 20,
+          name: 'Ultra-man',
+        },
+        200 // You should specify the status code even if it's 200.
+      )
     },
     (result, c) => {
       if (!result.success) {
@@ -196,11 +204,19 @@ describe('Basic - params', () => {
             responses: {
               '200': {
                 description: 'Get the user',
-                content: { 'application/json': { schema: { $ref: '#/components/schemas/User' } } },
+                content: {
+                  'application/json': {
+                    schema: { $ref: '#/components/schemas/User' },
+                  },
+                },
               },
               '400': {
                 description: 'Error!',
-                content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } },
+                content: {
+                  'application/json': {
+                    schema: { $ref: '#/components/schemas/Error' },
+                  },
+                },
               },
             },
           },
@@ -561,7 +577,7 @@ describe('Input types', () => {
           name: 'id',
           in: 'path',
         },
-        example: 123,
+        example: '123',
       }),
   })
 
@@ -574,7 +590,7 @@ describe('Input types', () => {
           name: 'age',
           in: 'query',
         },
-        example: 42,
+        example: '42',
       }),
   })
 
@@ -663,8 +679,23 @@ describe('Input types', () => {
   app.openapi(route, (c) => {
     return c.json({
       id: '123', // should be number
-      message: 'Success',
+      age: 42,
+      sex: 'male' as const,
+      name: 'Success',
     })
+  })
+
+  // @ts-expect-error it should throw an error if the status code is wrong
+  app.openapi(route, (c) => {
+    return c.json(
+      {
+        id: 123,
+        age: 42,
+        sex: 'male' as const,
+        name: 'Success',
+      },
+      404
+    )
   })
 })
 
@@ -704,7 +735,7 @@ describe('Routers', () => {
   })
   it('Should include definitions from nested routers', async () => {
     const router = new OpenAPIHono().openapi(route, (ctx) => {
-      return ctx.jsonT({ id: 123 })
+      return ctx.json({ id: 123 })
     })
 
     router.openAPIRegistry.register('Id', z.number())
@@ -827,10 +858,27 @@ describe('basePath()', () => {
   it('Should retain defaultHook of the parent app', async () => {
     const defaultHook = () => {}
     const app = new OpenAPIHono({
-      defaultHook
+      defaultHook,
     }).basePath('/api')
     expect(app.defaultHook).toBeDefined()
     expect(app.defaultHook).toBe(defaultHook)
+  })
+
+  it('Should include base path in typings', () => {
+    const routes = new OpenAPIHono()
+      .basePath('/api')
+      .openapi(route, (c) => c.json({ message: 'Hello' }))
+
+    const client = hc<typeof routes>('http://localhost/')
+
+    expect(client.api.message.$url().pathname).toBe('/api/message')
+  })
+
+  it('Should add the base path to paths', async () => {
+    const res = await app.request('/api/doc')
+    expect(res.status).toBe(200)
+    const data = (await res.json()) as any
+    expect(Object.keys(data.paths)[0]).toBe('/api/message')
   })
 })
 
@@ -966,7 +1014,7 @@ describe('With hc', () => {
     // use the defaultHook
     app.openapi(createPostRoute, (c) => {
       const { title } = c.req.valid('json')
-      return c.json({ title })
+      return c.json({ title }, 200)
     })
 
     // use a routeHook
@@ -974,18 +1022,17 @@ describe('With hc', () => {
       createBookRoute,
       (c) => {
         const { title } = c.req.valid('json')
-        return c.json({ title })
+        return c.json({ title }, 200)
       },
       (result, c) => {
         if (!result.success) {
-          const res = c.json(
+          return c.json(
             {
               ok: false,
               source: 'routeHook' as const,
             },
             400
           )
-          return res
         }
       }
     )
@@ -1349,5 +1396,171 @@ describe('Handle "Conflicting names for parameter"', () => {
       },
       message: 'Conflicting names for parameter',
     })
+  })
+})
+
+describe('Middleware', () => {
+  const app = new OpenAPIHono()
+  app.openapi(
+    createRoute({
+      method: 'get',
+      path: '/books',
+      middleware: [
+        (c, next) => {
+          c.header('x-foo', 'bar')
+          return next()
+        },
+      ],
+      responses: {
+        200: {
+          description: 'response',
+        },
+      },
+    }),
+    (c) => c.text('foo')
+  )
+
+  it('Should have the header set by the middleware', async () => {
+    const res = await app.request('/books')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('x-foo')).toBe('bar')
+  })
+})
+
+describe('RouteConfigToTypedResponse', () => {
+  const ParamsSchema = z.object({
+    id: z
+      .string()
+      .min(4)
+      .openapi({
+        param: {
+          name: 'id',
+          in: 'path',
+        },
+        example: '12345',
+      }),
+  })
+  const UserSchema = z
+    .object({
+      name: z.string().openapi({
+        example: 'John Doe',
+      }),
+      age: z.number().openapi({
+        example: 42,
+      }),
+    })
+    .openapi('User')
+
+  const ErrorSchema = z
+    .object({
+      ok: z.boolean().openapi({
+        example: false,
+      }),
+    })
+    .openapi('Error')
+
+  it('Should return types correctly', () => {
+    const route = {
+      method: 'post' as any,
+      path: '/users/{id}',
+      request: {
+        params: ParamsSchema,
+      },
+      responses: {
+        200: {
+          content: {
+            'application/json': {
+              schema: UserSchema,
+            },
+          },
+          description: 'Get the user',
+        },
+        400: {
+          content: {
+            'application/json': {
+              schema: ErrorSchema,
+            },
+          },
+          description: 'Error!',
+        },
+        '5XX': {
+          content: {
+            'application/json': {
+              schema: ErrorSchema,
+            },
+          },
+          description: 'Server Error!',
+        },
+      },
+    }
+
+    type Actual = RouteConfigToTypedResponse<typeof route>
+
+    type Expected =
+      | TypedResponse<
+          {
+            name: string
+            age: number
+          },
+          200,
+          'json'
+        >
+      | TypedResponse<
+          {
+            ok: boolean
+          },
+          400,
+          'json'
+        >
+      | TypedResponse<
+          {
+            ok: boolean
+          },
+          ServerErrorStatusCode,
+          'json'
+        >
+    type verify = Expect<Equal<Expected, Actual>>
+  })
+})
+
+describe('Generate YAML', () => {
+  it('Should generate YAML with Middleware', async () => {
+    const app = new OpenAPIHono()
+    app.openapi(
+      createRoute({
+        method: 'get',
+        path: '/books',
+        middleware: [
+          bearerAuth({
+            verifyToken: (_, __) => {
+              return true
+            },
+          }),
+        ],
+        responses: {
+          200: {
+            description: 'Books',
+            content: {
+              'application/json': {
+                schema: z.array(
+                  z.object({
+                    title: z.string(),
+                  })
+                ),
+              },
+            },
+          },
+        },
+      }),
+      (c) => c.json([{ title: 'foo' }])
+    )
+    const doc = app.getOpenAPI31Document({
+      openapi: '3.1.0',
+      info: {
+        title: 'My API',
+        version: '1.0.0',
+      },
+    })
+    expect(() => stringify(doc)).to.not.throw()
   })
 })

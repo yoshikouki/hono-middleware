@@ -1,7 +1,13 @@
 import { HTTPException } from 'hono/http-exception'
 
 import { toQueryParams } from '../../utils/objectToQuery'
-import type { GitHubErrorResponse, GitHubTokenResponse, GitHubUser, GitHubScope } from './types'
+import type {
+  GitHubErrorResponse,
+  GitHubTokenResponse,
+  GitHubUser,
+  GitHubScope,
+  GitHubEmailResponse,
+} from './types'
 
 type GithubAuthFlow = {
   client_id: string
@@ -15,6 +21,9 @@ type Token = {
   token: string
   expires_in?: number
 }
+
+const userAgent = 'Hono-Auth-App'
+
 export class AuthFlow {
   client_id: string
   client_secret: string
@@ -85,6 +94,26 @@ export class AuthFlow {
     }
   }
 
+  private async getEmail() {
+    const emails = (await fetch('https://api.github.com/user/emails', {
+      headers: {
+        Authorization: `Bearer ${this.token?.token}`,
+        'User-Agent': userAgent,
+      },
+    }).then((res) => res.json())) as GitHubEmailResponse[] | GitHubErrorResponse
+
+    if ('message' in emails) {
+      throw new HTTPException(400, { message: emails.message })
+    }
+
+    let email = emails.find((emails) => emails.primary === true)?.email
+    if (email === undefined) {
+      email = emails.find((emails) => !emails.email.includes('@users.noreply.github.com'))?.email
+    }
+
+    return email as string
+  }
+
   async getUserData() {
     if (!this.token?.token) {
       await this.getTokenFromCode()
@@ -95,13 +124,15 @@ export class AuthFlow {
         Authorization: `Bearer ${this.token?.token}`,
         Accept: 'application/json',
         'Content-Type': 'application/json',
-        'User-Agent': 'Hono-Auth-App',
+        'User-Agent': userAgent,
       },
     }).then((res) => res.json())) as GitHubUser | GitHubErrorResponse
 
     if ('message' in response) {
       throw new HTTPException(400, { message: response.message })
     }
+
+    response.email = await this.getEmail()
 
     if ('id' in response) {
       this.user = response

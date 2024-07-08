@@ -1,5 +1,17 @@
 # @hono/zod-validator
 
+## 0.2.2
+
+### Patch Changes
+
+- [#552](https://github.com/honojs/middleware/pull/552) [`aa055494974eb911ec784e6462691aafefd98125`](https://github.com/honojs/middleware/commit/aa055494974eb911ec784e6462691aafefd98125) Thanks [@EdamAme-x](https://github.com/EdamAme-x)! - fix: support async hook
+
+## 0.2.1
+
+### Patch Changes
+
+- [#431](https://github.com/honojs/middleware/pull/431) [`c721d14d4b90b9702936ad64f54d15bfd7ecfc88`](https://github.com/honojs/middleware/commit/c721d14d4b90b9702936ad64f54d15bfd7ecfc88) Thanks [@MAKS11060](https://github.com/MAKS11060)! - fix export esm module
+
 ## 0.2.0
 
 ### Minor Changes
